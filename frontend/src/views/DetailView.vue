@@ -4,10 +4,21 @@
             <h1>{{ video.title }}</h1>
             <p class="release-date">发行日期: {{ video.releaseDate }}</p>
         </div>
-
+        
         <div class="content">
             <div class="poster">
                 <img :src="video.poster" :alt="video.title">
+            </div>
+
+            <div class="video-player" v-if="video.videoFile">
+                <video 
+                    controls 
+                    preload="metadata" 
+                    controlsList="nodownload"
+                    :src="video.videoFile"
+                >
+                    您的浏览器不支持 HTML5 视频播放。
+                </video>
             </div>
 
             <Gallery :images="video.fanarts" />
@@ -21,14 +32,16 @@ import videosApi from '../api/videos'
 
 export default {
     components: { Gallery },
-    props: ['id'],
+    // 接收两个参数：演员名称和视频ID
+    props: ['actressName', 'id'], 
     data() {
         return {
             video: null
         }
     },
     async created() {
-        this.video = await videosApi.getVideoDetail(this.id)
+        // 请求详情时传入两个参数
+        this.video = await videosApi.getVideoDetail(this.actressName, this.id)
     }
 }
 </script>
@@ -44,7 +57,7 @@ export default {
 }
 
 .header h1 {
-  color: var(--text-color);
+  color: var(--text-color, #333);
   font-size: 2rem;
   margin-bottom: 0.5rem;
 }
@@ -63,10 +76,23 @@ export default {
   box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
 }
 
+/* 完善视频播放器的样式 */
 .video-player {
   margin-top: 2rem;
+  margin-bottom: 2rem;
   border-radius: 12px;
-  overflow: hidden;
+  overflow: hidden; /* 保证视频的四个角也能贴合圆角 */
   box-shadow: 0 5px 25px rgba(0, 0, 0, 0.1);
+  background-color: #000; /* 视频未加载时显示黑色背景 */
+  display: flex;
+  justify-content: center;
+}
+
+/* 针对 video 标签本身的约束 */
+.video-player video {
+  width: 100%;
+  max-height: 75vh; /* 限制视频最大高度，防止大屏幕上占据过多空间 */
+  display: block;
+  outline: none;
 }
 </style>

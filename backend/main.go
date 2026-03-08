@@ -14,7 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
+	// "strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,14 +24,15 @@ import (
 
 // 服务器配置
 const (
-	basePath   = "/vol2/1000/MissAV"
+	basePath   = "F://sVideo"
 	serverPort = ":31471"
 	apiKey     = "IBHUSDBWQHJEJOBDSW"
 )
 
 // 全局缓存
 var (
-	videoListCache []VideoItem
+	actressListCache []VideoItem
+	videoListCache map[string][]VideoItem
 	cacheMutex     sync.RWMutex
 	logger         = log.New(os.Stdout, "[MissAV] ", log.LstdFlags|log.Lshortfile)
 )
@@ -41,6 +42,7 @@ type VideoItem struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Poster string `json:"poster"`
+	Fanart string `json:"fanart"`
 }
 
 // VideoDetail 视频详细信息
@@ -50,6 +52,7 @@ type VideoDetail struct {
 	ReleaseDate string   `json:"releaseDate"`
 	Fanarts     []string `json:"fanarts"`
 	VideoFile   string   `json:"videoFile,omitempty"`
+	Actress		string   `json:"actress"`
 }
 
 // NfoFile NFO文件结构
@@ -88,7 +91,7 @@ func main() {
 	logger.Println("Starting MissAV server...")
 
 	// 初始化缓存
-	if err := buildVideoListCache(); err != nil {
+	if err := buildCache(); err != nil {
 		logger.Fatalf("Failed to build initial cache: %v", err)
 	}
 
@@ -97,7 +100,8 @@ func main() {
 
 	// 设置路由
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/videos", listVideosHandler)
+	mux.HandleFunc("/api/actresses", listActressesHandler)
+	mux.HandleFunc("/api/actress/", listVideosByActressHandler)
 	mux.HandleFunc("/api/videos/", videoDetailHandler)
 	mux.HandleFunc("/api/addvideo/", addVideoHandler)
 	mux.HandleFunc("/file/", imageHandler)
@@ -124,7 +128,7 @@ func startCacheUpdater(interval time.Duration) {
 
 	for range ticker.C {
 		logger.Println("Starting scheduled cache update...")
-		if err := buildVideoListCache(); err != nil {
+		if err := buildCache(); err != nil {
 			logger.Printf("Cache update failed: %v", err)
 		} else {
 			logger.Println("Cache updated successfully")
@@ -132,88 +136,105 @@ func startCacheUpdater(interval time.Duration) {
 	}
 }
 
-// buildVideoListCache 构建视频列表缓存
-func buildVideoListCache() error {
+func buildCache() error {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
 	startTime := time.Now()
-	logger.Println("Building video list cache...")
+	logger.Println("Building cache...")
 
-	// 读取目录
-	files, err := os.ReadDir(basePath)
+	actressDirs, err := os.ReadDir(basePath)
 	if err != nil {
-		logger.Printf("Error reading directory %s: %v", basePath, err)
-		return fmt.Errorf("read directory failed: %w", err)
+		return fmt.Errorf("read directory %s failed: %w", basePath, err)
 	}
 
-	type dirEntryWithInfo struct {
-		entry os.DirEntry
-		info  os.FileInfo
-	}
+	newActressList := []VideoItem{}
+	newVideoList := make(map[string][]VideoItem)
 
-	// 获取文件夹的修改时间信息
-	var dirs []dirEntryWithInfo
-	for _, file := range files {
-		if !file.IsDir() {
+	var videoCount int
+	for _, actressDir := range actressDirs {
+		if !actressDir.IsDir() {
 			continue
 		}
-		info, err := file.Info()
+		actressName := actressDir.Name()
+
+		// 排除 thumb 文件夹本身
+		if strings.ToLower(actressName) == "thumb" {
+			continue
+		}
+
+		actressPoster := fmt.Sprintf("/file/thumb/%s.jpg", actressName)
+
+		videoDirs, err := os.ReadDir(filepath.Join(basePath, actressName))
 		if err != nil {
-			logger.Printf("Error getting info for %s: %v", file.Name(), err)
-			continue
-		}
-		dirs = append(dirs, dirEntryWithInfo{entry: file, info: info})
-	}
-
-	// 按修改时间倒序排序（最新的在前面）
-	sort.Slice(dirs, func(i, j int) bool {
-		return dirs[i].info.ModTime().After(dirs[j].info.ModTime())
-	})
-
-	// 如果文件夹数量一致（且都是有效文件夹），则跳过重建
-	validCount := 0
-	for _, dir := range dirs {
-		posterPath := filepath.Join(basePath, dir.entry.Name(), dir.entry.Name()+"-poster.jpg")
-		if _, err := os.Stat(posterPath); err == nil {
-			validCount++
-		}
-	}
-
-	if validCount == len(videoListCache) {
-		logger.Printf("Cache unchanged. Valid items: %d", validCount)
-		return nil
-	}
-
-	// 清空现有缓存
-	videoListCache = nil
-
-	var count int
-	for _, dir := range dirs {
-		videoID := dir.entry.Name()
-		posterPath := filepath.Join(basePath, videoID, videoID+"-poster.jpg")
-
-		if _, err := os.Stat(posterPath); err != nil {
-			logger.Printf("Poster not found for %s: %v", videoID, err)
+			logger.Printf("Error reading actress dir %s: %v", actressName, err)
 			continue
 		}
 
-		title, _, err := parseTitleAndDate(videoID)
-		if err != nil {
-			logger.Printf("Failed to parse NFO for %s: %v", videoID, err)
-			title = videoID
+		var actressVideos []VideoItem
+		for _, videoDir := range videoDirs {
+			if !videoDir.IsDir() {
+				continue
+			}
+			videoID := videoDir.Name()
+			videoPath := filepath.Join(basePath, actressName, videoID)
+			
+			// 视频封面
+			posterPath := filepath.Join(videoPath, videoID+"-poster.jpg")
+			if _, err := os.Stat(posterPath); err != nil {
+				continue // 没有封面的视频跳过
+			}
+
+// === 修改点 1：不再从 NFO 读取标题，而是寻找视频文件名 ===
+			title := videoID // 默认 fallback
+			fanartUrl := ""  // 新增：用于存储找到的横版图片路径
+			
+			if files, err := os.ReadDir(videoPath); err == nil {
+				for _, f := range files {
+					if !f.IsDir() {
+						name := f.Name()
+						// 1. 找视频文件做标题
+						if strings.Contains(name, videoID) {
+							ext := strings.ToLower(filepath.Ext(name))
+							if ext == ".mp4" || ext == ".mkv" || ext == ".avi" || ext == ".wmv" {
+								title = strings.TrimSuffix(name, filepath.Ext(name))
+							}
+						}
+						// 2. 找横版剧照/封面 (寻找包含 -fanart 并且是 .jpg 的文件)
+						if strings.HasPrefix(name, videoID+"-fanart") && strings.HasSuffix(strings.ToLower(name), ".jpg") {
+							// 只取找到的第一张图作为列表页的横版封面
+							if fanartUrl == "" {
+								fanartUrl = fmt.Sprintf("/file/%s/%s/%s", actressName, videoID, name)
+							}
+						}
+					}
+				}
+			}
+
+			actressVideos = append(actressVideos, VideoItem{
+				ID:     videoID,
+				Title:  title,
+				Poster: fmt.Sprintf("/file/%s/%s/%s-poster.jpg", actressName, videoID, videoID),
+				Fanart: fanartUrl, // 将找到的横版图片路径传给前端
+			})
+			videoCount++
 		}
 
-		videoListCache = append(videoListCache, VideoItem{
-			ID:     videoID,
-			Title:  title,
-			Poster: fmt.Sprintf("/file/%s/%s-poster.jpg", videoID, videoID),
-		})
-		count++
+		if len(actressVideos) > 0 {
+			newVideoList[actressName] = actressVideos
+			newActressList = append(newActressList, VideoItem{
+				ID:     actressName,
+				Title:  actressName,
+				Poster: actressPoster,
+			})
+		}
 	}
 
-	logger.Printf("Cache built successfully. Items: %d, Duration: %v",
-		count, time.Since(startTime))
+	actressListCache = newActressList
+	videoListCache = newVideoList
+
+	logger.Printf("Cache built successfully. Actresses: %d, Videos: %d, Duration: %v",
+		len(actressListCache), videoCount, time.Since(startTime))
 	return nil
 }
 
@@ -254,21 +275,34 @@ func parseTitleAndDate(videoID string) (title, releaseDate string, err error) {
 	return nfo.Title, date, nil
 }
 
-// listVideosHandler 获取视频列表
-func listVideosHandler(w http.ResponseWriter, r *http.Request) {
+func listActressesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(actressListCache)
+}
 
+// listVideosHandler 获取视频列表
+func listVideosByActressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	actressName := strings.TrimPrefix(r.URL.Path, "/api/actress/")
 	cacheMutex.RLock()
 	defer cacheMutex.RUnlock()
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(videoListCache); err != nil {
-		logger.Printf("Error encoding video list: %v", err)
-		httpError(w, "Internal server error", http.StatusInternalServerError)
+	videos, ok := videoListCache[actressName]
+	if !ok {
+		httpError(w, "Actress not found", http.StatusNotFound)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(videos)
 }
 
 // videoDetailHandler 获取视频详情
@@ -278,111 +312,57 @@ func videoDetailHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videoID := strings.TrimPrefix(r.URL.Path, "/api/videos/")
-	if videoID == "" {
-		httpError(w, "Invalid video ID", http.StatusBadRequest)
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/videos/"), "/")
+	if len(parts) != 2 {
+		httpError(w, "Invalid path format", http.StatusBadRequest)
 		return
 	}
+	actressName, videoID := parts[0], parts[1]
 
-	detail := VideoDetail{ID: videoID}
-	startTime := time.Now()
+	detail := VideoDetail{ID: videoID, Actress: actressName}
+	videoPath := filepath.Join(basePath, actressName, videoID)
 
-	// 解析NFO文件
-	title, date, err := parseTitleAndDate(videoID)
+	_, date, err := parseTitleAndDate(filepath.Join(videoPath, videoID+".nfo"))
 	if err != nil {
-		logger.Printf("NFO parse for %s failed: %v", videoID, err)
-		detail.Title = videoID
 		detail.ReleaseDate = "Unknown"
 	} else {
-		detail.Title = title
 		detail.ReleaseDate = date
 	}
-
-	// 查找fanart图片
-	fanartDir := filepath.Join(basePath, videoID)
-	if files, err := ioutil.ReadDir(fanartDir); err == nil {
-		// 创建临时存储结构
-		type fanartFile struct {
-			path   string
-			num    int
-			hasNum bool
+	title := videoID
+	actualVideoFile := ""
+	if files, err := ioutil.ReadDir(videoPath); err == nil {
+		for _, f := range files {
+			if !f.IsDir() && strings.Contains(f.Name(), videoID) {
+				ext := strings.ToLower(filepath.Ext(f.Name()))
+				if ext == ".mp4" || ext == ".mkv" || ext == ".avi" || ext == ".wmv" {
+					title = strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
+					actualVideoFile = f.Name() // 记录带后缀的完整文件名用于播放
+					break
+				}
+			}
 		}
+	}
+	detail.Title = title
 
-		var fanarts []fanartFile
-
+	if files, err := ioutil.ReadDir(videoPath); err == nil {
+		var fanarts []string
 		for _, file := range files {
 			name := file.Name()
-			if !file.IsDir() && strings.HasPrefix(name, videoID+"-fanart") &&
-				strings.HasSuffix(name, ".jpg") {
-
-				// 提取文件名中的数字部分
-				parts := strings.Split(name, "-fanart")
-				if len(parts) < 2 {
-					continue
-				}
-
-				numPart := strings.TrimSuffix(parts[1], ".jpg")
-				numPart = strings.TrimPrefix(numPart, "-")
-
-				var num int
-				var hasNum bool
-
-				// 尝试解析数字
-				if n, err := strconv.Atoi(numPart); err == nil {
-					num = n
-					hasNum = true
-				} else {
-					// 没有数字的情况
-					num = 0
-					hasNum = false
-				}
-
-				fanarts = append(fanarts, fanartFile{
-					path:   fmt.Sprintf("/file/%s/%s", videoID, name),
-					num:    num,
-					hasNum: hasNum,
-				})
+			if !file.IsDir() && strings.HasPrefix(name, videoID+"-fanart") && strings.HasSuffix(name, ".jpg") {
+				fanarts = append(fanarts, fmt.Sprintf("/file/%s/%s/%s", actressName, videoID, name))
 			}
 		}
-
-		// 排序
-		sort.Slice(fanarts, func(i, j int) bool {
-			// 都有数字的情况，按数字排序
-			if fanarts[i].hasNum && fanarts[j].hasNum {
-				return fanarts[i].num < fanarts[j].num
-			}
-			// 只有一个有数字的情况，有数字的排在前面
-			if fanarts[i].hasNum && !fanarts[j].hasNum {
-				return true
-			}
-			if !fanarts[i].hasNum && fanarts[j].hasNum {
-				return false
-			}
-			// 都没有数字的情况，按原始文件名排序
-			return fanarts[i].path < fanarts[j].path
-		})
-
-		// 将排序后的结果存入detail.Fanarts
-		for _, f := range fanarts {
-			detail.Fanarts = append(detail.Fanarts, f.path)
-		}
-	} else {
-		logger.Printf("Error reading fanart dir for %s: %v", videoID, err)
+		sort.Strings(fanarts)
+		detail.Fanarts = fanarts
 	}
 
-	// 检查视频文件
-	videoFile := filepath.Join(basePath, videoID, videoID+".mp4")
-	if _, err := os.Stat(videoFile); err == nil {
-		detail.VideoFile = fmt.Sprintf("/file/%s/%s.mp4", videoID, videoID)
+	// 使用刚刚找到的真实文件名拼接视频播放路径
+	if actualVideoFile != "" {
+		detail.VideoFile = fmt.Sprintf("/file/%s/%s/%s", actressName, videoID, actualVideoFile)
 	}
-
-	logger.Printf("Processed detail request for %s in %v", videoID, time.Since(startTime))
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(detail); err != nil {
-		logger.Printf("Error encoding detail for %s: %v", videoID, err)
-		httpError(w, "Internal server error", http.StatusInternalServerError)
-	}
+	json.NewEncoder(w).Encode(detail)
 }
 
 // imageHandler 处理图片请求
@@ -392,34 +372,34 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/file/"), "/")
-	if len(pathParts) < 2 {
-		httpError(w, "Invalid image path", http.StatusBadRequest)
+	// 获取 /file/ 后面的相对路径
+	relativePath := strings.TrimPrefix(r.URL.Path, "/file/")
+	if relativePath == "" {
+		httpError(w, "Invalid file path", http.StatusBadRequest)
 		return
 	}
 
-	videoID := pathParts[0]
-	filename := strings.Join(pathParts[1:], "/")
-	imagePath := filepath.Join(basePath, videoID, filename)
+	imagePath := filepath.Join(basePath, relativePath)
 
-	// 安全检查
-	if !strings.HasPrefix(filepath.Clean(imagePath), filepath.Clean(basePath)) {
-		httpError(w, "Invalid path", http.StatusBadRequest)
+	// 安全检查：防止路径穿越 (例如请求 /file/../../../etc/passwd)
+	cleanBasePath := filepath.Clean(basePath)
+	cleanImagePath := filepath.Clean(imagePath)
+	if !strings.HasPrefix(cleanImagePath, cleanBasePath+string(os.PathSeparator)) {
+		httpError(w, "Forbidden path", http.StatusForbidden)
 		return
 	}
 
-	fileInfo, err := os.Stat(imagePath)
+	fileInfo, err := os.Stat(cleanImagePath)
 	if os.IsNotExist(err) {
 		http.NotFound(w, r)
 		return
-	} else if err != nil {
-		logger.Printf("Error accessing file %s: %v", imagePath, err)
-		httpError(w, "Internal server error", http.StatusInternalServerError)
+	} else if err != nil || fileInfo.IsDir() {
+		httpError(w, "Internal server error or invalid file", http.StatusInternalServerError)
 		return
 	}
 
 	// 设置Content-Type
-	switch filepath.Ext(filename) {
+	switch filepath.Ext(cleanImagePath) {
 	case ".jpg", ".jpeg":
 		w.Header().Set("Content-Type", "image/jpeg")
 	case ".png":
@@ -428,8 +408,7 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 	}
 
-	logger.Printf("Serving file %s (Size: %d)", imagePath, fileInfo.Size())
-	http.ServeFile(w, r, imagePath)
+	http.ServeFile(w, r, cleanImagePath)
 }
 
 // downloadQueueHandler 新增下载队列
