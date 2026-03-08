@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,8 @@ const (
 var (
 	actressListCache []VideoItem
 	videoListCache map[string][]VideoItem
+	genreListCache     []GenreItem
+	genreVideoMapCache map[string][]VideoItem
 	cacheMutex     sync.RWMutex
 	logger         = log.New(os.Stdout, "[MissAV] ", log.LstdFlags|log.Lshortfile)
 )
@@ -43,6 +46,7 @@ type VideoItem struct {
 	Title  string `json:"title"`
 	Poster string `json:"poster"`
 	Fanart string `json:"fanart"`
+	Actress string `json:"actress"`
 }
 
 // VideoDetail 视频详细信息
@@ -53,6 +57,7 @@ type VideoDetail struct {
 	Fanarts     []string `json:"fanarts"`
 	VideoFile   string   `json:"videoFile,omitempty"`
 	Actress		string   `json:"actress"`
+	Genres      []string `json:"genres"`
 }
 
 // NfoFile NFO文件结构
@@ -61,6 +66,12 @@ type NfoFile struct {
 	Title       string   `xml:"title"`
 	ReleaseDate string   `xml:"releasedate"`
 	Premiered   string   `xml:"premiered"`
+	Genres      []string `xml:"genre"`
+}
+
+type GenreItem struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
 }
 
 func enableCORS(next http.Handler) http.Handler {
@@ -105,6 +116,8 @@ func main() {
 	mux.HandleFunc("/api/videos/", videoDetailHandler)
 	mux.HandleFunc("/api/addvideo/", addVideoHandler)
 	mux.HandleFunc("/file/", imageHandler)
+	mux.HandleFunc("/api/genres", listGenresHandler)
+	mux.HandleFunc("/api/genre/", listVideosByGenreHandler)
 
 	// 包装CORS中间件
 	handler := enableCORS(mux)
@@ -150,6 +163,7 @@ func buildCache() error {
 
 	newActressList := []VideoItem{}
 	newVideoList := make(map[string][]VideoItem)
+	newGenreVideoMap := make(map[string][]VideoItem)
 
 	var videoCount int
 	for _, actressDir := range actressDirs {
@@ -184,8 +198,6 @@ func buildCache() error {
 			if _, err := os.Stat(posterPath); err != nil {
 				continue // 没有封面的视频跳过
 			}
-
-// === 修改点 1：不再从 NFO 读取标题，而是寻找视频文件名 ===
 			title := videoID // 默认 fallback
 			fanartUrl := ""  // 新增：用于存储找到的横版图片路径
 			
@@ -211,12 +223,49 @@ func buildCache() error {
 				}
 			}
 
-			actressVideos = append(actressVideos, VideoItem{
-				ID:     videoID,
-				Title:  title,
-				Poster: fmt.Sprintf("/file/%s/%s/%s-poster.jpg", actressName, videoID, videoID),
-				Fanart: fanartUrl, // 将找到的横版图片路径传给前端
-			})
+			vItem := VideoItem{
+				ID:      videoID,
+				Title:   title,
+				Poster:  fmt.Sprintf("/file/%s/%s/%s-poster.jpg", actressName, videoID, videoID),
+				Fanart:  fanartUrl,
+				Actress: actressName,
+			}
+			actressVideos = append(actressVideos, vItem)
+
+			nfoPath := filepath.Join(videoPath, videoID+".nfo")
+			if file, err := os.Open(nfoPath); err == nil {
+				decoder := xml.NewDecoder(file)
+				decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+					return input, nil
+				}
+				var nfo NfoFile
+				if err := decoder.Decode(&nfo); err == nil {
+					// 去重，防止同一个文件写了重复标签
+					seenGenres := make(map[string]bool)
+					
+					// 遍历所有解析到的 genre 标签
+					for i, g := range nfo.Genres {
+						g = strings.TrimSpace(g)
+						
+						// 修改点：如果是第一个标签 (i == 0)，并且内容与番号 (videoID) 相同（忽略大小写），则跳过
+						if i == 0 && strings.EqualFold(g, videoID) {
+							continue
+						}
+						
+						// 补充建议：如果 NFO 抓取工具可能把番号写在其他位置，
+						// 也可以直接把 `i == 0 &&` 删掉，忽略所有等于番号的标签：
+						// if strings.EqualFold(g, videoID) { continue }
+
+						if g != "" && !seenGenres[g] {
+							seenGenres[g] = true
+							newGenreVideoMap[g] = append(newGenreVideoMap[g], vItem)
+						}
+					}
+				}
+				file.Close()
+			}
+
+
 			videoCount++
 		}
 
@@ -230,11 +279,22 @@ func buildCache() error {
 		}
 	}
 
+	newGenreList := make([]GenreItem, 0, len(newGenreVideoMap))
+	for g, vids := range newGenreVideoMap {
+		newGenreList = append(newGenreList, GenreItem{Name: g, Count: len(vids)})
+	}
+    // 降序排列
+	sort.Slice(newGenreList, func(i, j int) bool {
+		return newGenreList[i].Count > newGenreList[j].Count
+	})
+
 	actressListCache = newActressList
 	videoListCache = newVideoList
+	genreListCache = newGenreList               // 更新缓存
+	genreVideoMapCache = newGenreVideoMap       // 更新缓存
 
-	logger.Printf("Cache built successfully. Actresses: %d, Videos: %d, Duration: %v",
-		len(actressListCache), videoCount, time.Since(startTime))
+	logger.Printf("Cache built successfully. Actresses: %d, Genres: %d, Videos: %d, Duration: %v",
+		len(actressListCache), len(genreListCache), videoCount, time.Since(startTime))
 	return nil
 }
 
@@ -322,12 +382,42 @@ func videoDetailHandler(w http.ResponseWriter, r *http.Request) {
 	detail := VideoDetail{ID: videoID, Actress: actressName}
 	videoPath := filepath.Join(basePath, actressName, videoID)
 
-	_, date, err := parseTitleAndDate(filepath.Join(videoPath, videoID+".nfo"))
-	if err != nil {
-		detail.ReleaseDate = "Unknown"
-	} else {
-		detail.ReleaseDate = date
+	// 手动解析 NFO 获取日期和标签
+	nfoPath := filepath.Join(videoPath, videoID+".nfo")
+	detail.ReleaseDate = "Unknown"
+	var genres []string
+
+	if file, err := os.Open(nfoPath); err == nil {
+		decoder := xml.NewDecoder(file)
+		decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+			return input, nil
+		}
+		var nfo NfoFile
+		if err := decoder.Decode(&nfo); err == nil {
+			// 1. 获取发行日期
+			if nfo.ReleaseDate != "" {
+				detail.ReleaseDate = nfo.ReleaseDate
+			} else if nfo.Premiered != "" {
+				detail.ReleaseDate = nfo.Premiered
+			}
+			
+			// 2. 提取标签，去重并过滤掉番号
+			seenGenres := make(map[string]bool)
+			for i, g := range nfo.Genres {
+				g = strings.TrimSpace(g)
+				// 忽略第一个且名字与番号相同的标签
+				if i == 0 && strings.EqualFold(g, videoID) {
+					continue
+				}
+				if g != "" && !seenGenres[g] {
+					seenGenres[g] = true
+					genres = append(genres, g)
+				}
+			}
+		}
+		file.Close()
 	}
+	detail.Genres = genres // 将整理好的标签数组赋值给详情对象
 	title := videoID
 	actualVideoFile := ""
 	if files, err := ioutil.ReadDir(videoPath); err == nil {
@@ -483,6 +573,44 @@ func addVideoHandler(w http.ResponseWriter, r *http.Request) {
 	// 设置响应内容类型
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte(response))
+}
+
+// listGenresHandler 获取所有标签
+func listGenresHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(genreListCache)
+}
+
+// listVideosByGenreHandler 获取某个标签下的所有视频
+func listVideosByGenreHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	genreName := strings.TrimPrefix(r.URL.Path, "/api/genre/")
+	// 处理中文字符的 URL 编码
+	if decoded, err := url.QueryUnescape(genreName); err == nil {
+		genreName = decoded
+	}
+
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+
+	videos, ok := genreVideoMapCache[genreName]
+	if !ok {
+		// 即使没有找到，返回空数组
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode([]VideoItem{})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(videos)
 }
 
 func checkStringExists(db *sql.DB, target string) (bool, error) {

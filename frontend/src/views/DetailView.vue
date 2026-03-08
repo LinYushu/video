@@ -21,6 +21,28 @@
                 </video>
             </div>
 
+            <div class="meta-section">
+                <div class="actress-info" @click="goToActress">
+                    <img 
+                        :src="video.actressAvatar" 
+                        :alt="video.actress" 
+                        class="actress-avatar" 
+                        @error="handleAvatarError"
+                    >
+                    <span class="actress-name">{{ video.actress }}</span>
+                </div>
+                
+                <div class="genres-list" v-if="video.genres && video.genres.length">
+                    <span 
+                        class="genre-tag" 
+                        v-for="genre in video.genres" 
+                        :key="genre"
+                        @click="goToGenre(genre)"
+                    >
+                        {{ genre }}
+                    </span>
+                </div>
+            </div>
             <Gallery :images="video.fanarts" />
         </div>
     </div>
@@ -32,7 +54,6 @@ import videosApi from '../api/videos'
 
 export default {
     components: { Gallery },
-    // 接收两个参数：演员名称和视频ID
     props: ['actressName', 'id'], 
     data() {
         return {
@@ -40,8 +61,27 @@ export default {
         }
     },
     async created() {
-        // 请求详情时传入两个参数
         this.video = await videosApi.getVideoDetail(this.actressName, this.id)
+    },
+    methods: {
+        // 新增：跳转到演员主页
+        goToActress() {
+            this.$router.push({ 
+                name: 'actress', 
+                params: { actressName: this.video.actress } 
+            })
+        },
+        // 新增：跳转到标签分类页
+        goToGenre(genreName) {
+            this.$router.push({ 
+                name: 'genre', 
+                params: { genreName: genreName } 
+            })
+        },
+        // 新增：如果某个演员没有头像图片，隐藏图片破损的 icon
+        handleAvatarError(e) {
+            e.target.style.display = 'none';
+        }
     }
 }
 </script>
@@ -76,23 +116,85 @@ export default {
   box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
 }
 
-/* 完善视频播放器的样式 */
 .video-player {
   margin-top: 2rem;
   margin-bottom: 2rem;
   border-radius: 12px;
-  overflow: hidden; /* 保证视频的四个角也能贴合圆角 */
+  overflow: hidden;
   box-shadow: 0 5px 25px rgba(0, 0, 0, 0.1);
-  background-color: #000; /* 视频未加载时显示黑色背景 */
+  background-color: #000;
   display: flex;
   justify-content: center;
 }
 
-/* 针对 video 标签本身的约束 */
 .video-player video {
   width: 100%;
-  max-height: 75vh; /* 限制视频最大高度，防止大屏幕上占据过多空间 */
+  max-height: 75vh;
   display: block;
   outline: none;
 }
+
+/* ================= 新增：元数据展示区样式 ================= */
+/* ================= 修改：元数据展示区样式 (极简 & 一行同行展示) ================= */
+.meta-section {
+    margin: 1.5rem 0;
+    display: flex;
+    flex-direction: row; /* 水平排布，不换行 */
+    align-items: center; /* 垂直居中对齐 */
+    flex-wrap: wrap; /* 如果屏幕太窄标签太多，允许标签自然折行 */
+    gap: 15px; /* 头像名字组合 与 标签列表 之间的间距 */
+    padding: 10px 0; /* 去除了繁重的背景和阴影，保留极简风格 */
+}
+
+.actress-info {
+    display: flex;
+    align-items: center;
+    gap: 10px; /* 头像与名字之间的距离 */
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+}
+
+.actress-info:hover {
+    opacity: 0.7; /* 简单的悬停透明度反馈，去掉复杂的阴影放大效果 */
+}
+
+.actress-avatar {
+    width: 55px; /* 头像缩小 */
+    height: 55px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--secondary-color, #ff6b8b); /* 边框变细 */
+}
+
+.actress-name {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: var(--text-color, #5a3a4a);
+    white-space: nowrap; /* 保证名字不折行 */
+}
+
+.genres-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px; /* 【修改点】减小标签与标签之间的空隙 */
+    align-items: center;
+}
+
+.genre-tag {
+    /* 【修改点】极简风格的标签：浅色背景、小字体、小内边距 */
+    background-color: #fff0f3; 
+    color: var(--secondary-color, #ff6b8b);
+    border: 1px solid var(--accent-color, #ffcdd8);
+    padding: 4px 10px; /* 减小标签占用的空间 */
+    border-radius: 12px; /* 圆角变小 */
+    font-size: 0.85rem; /* 字体变小 */
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.genre-tag:hover {
+    background-color: var(--secondary-color, #ff6b8b);
+    color: white;
+}
+/* ================= 新增结束 ================= */
 </style>

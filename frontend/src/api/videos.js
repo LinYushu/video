@@ -31,7 +31,8 @@ export default {
             ...data,
             poster: data.fanarts?.length ? `${API_BASE}${data.fanarts[0]}` : null,
             videoFile: data.videoFile ? `${API_BASE}${data.videoFile}` : null,
-            fanarts: data.fanarts?.map(img => `${API_BASE}${img}`) || []
+            fanarts: data.fanarts?.map(img => `${API_BASE}${img}`) || [],
+            actressAvatar: `${API_BASE}/file/thumb/${encodeURIComponent(data.actress)}.jpg`
         }
     },
 
@@ -74,5 +75,19 @@ export default {
         } finally {
             this.isAdding = false; // 同上，建议移回 Vue 组件
         }
-    }
+    },
+
+    async getGenreList() {
+        const response = await axios.get(`${API_BASE}/api/genres`)
+        return response.data
+    },
+
+    async getVideoListByGenre(genreName) {
+        const response = await axios.get(`${API_BASE}/api/genre/${encodeURIComponent(genreName)}`)
+        return response.data.map(video => ({
+            ...video,
+            poster: video.poster ? `${API_BASE}${video.poster}` : '',
+            fanart: video.fanart ? `${API_BASE}${video.fanart}` : ''
+        }))
+    },
 }

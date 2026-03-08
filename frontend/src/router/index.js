@@ -2,6 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import DetailView from '../views/DetailView.vue'
 import ActressView from '../views/ActressView.vue'
+import GenreListView from '../views/GenreListView.vue'
+import GenreView from '../views/GenreView.vue'
 
 const routes = [
     {
@@ -19,6 +21,17 @@ const routes = [
         path: '/video/:actressName/:id',
         name: 'detail',
         component: DetailView,
+        props: true
+    },
+    {
+        path: '/genres',
+        name: 'genres',
+        component: GenreListView
+    },
+    {
+        path: '/genre/:genreName',
+        name: 'genre',
+        component: GenreView,
         props: true
     }
 ]

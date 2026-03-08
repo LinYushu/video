@@ -5,8 +5,13 @@
         <router-link to="/" class="logo">
           <h1>NASSAV</h1>
         </router-link>
+
+        <nav class="nav-menu">
+          <router-link to="/" class="nav-link" :class="{ 'active': $route.path === '/' }">演员</router-link>
+          <router-link to="/genres" class="nav-link" :class="{ 'active': $route.path.startsWith('/genre') }">标签</router-link>
+        </nav>
         
-        <div class="search-box">
+        <!-- <div class="search-box">
           <input 
             v-model="inputContent" 
             type="text" 
@@ -21,7 +26,7 @@
           >
             {{ isAdding ? '添加中...' : '添加' }}
           </button>
-        </div>
+        </div> -->
       </div>
     </header>
 
@@ -110,6 +115,31 @@ body {
   font-weight: 500;
   margin: 0;
   white-space: nowrap;
+}
+
+.nav-menu {
+  display: flex;
+  gap: 15px;
+  margin: 0 20px;
+  flex-grow: 1; /* 让导航占满中间剩余空间 */
+  justify-content: center; /* 按钮整体居中 */
+}
+
+.nav-link {
+  color: white;
+  text-decoration: none;
+  font-size: 1.0rem;
+  font-weight: bold;
+  padding: 6px 16px;
+  border-radius: 20px;
+  background-color: rgba(255, 255, 255, 0.15); /* 半透明底色 */
+  transition: all 0.3s ease;
+}
+
+.nav-link:hover, .nav-link.active {
+  background-color: white; /* 激活或悬浮时变为白色 */
+  color: var(--secondary-color); /* 文字变为主题色 */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 /* 搜索框样式 - 根据图片调整 */
