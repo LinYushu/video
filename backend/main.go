@@ -47,6 +47,7 @@ type VideoItem struct {
 	Poster string `json:"poster"`
 	Fanart string `json:"fanart"`
 	Actress string `json:"actress"`
+	Genres  []string `json:"genres"`
 }
 
 // VideoDetail 视频详细信息
@@ -230,9 +231,10 @@ func buildCache() error {
 				Fanart:  fanartUrl,
 				Actress: actressName,
 			}
-			actressVideos = append(actressVideos, vItem)
 
 			nfoPath := filepath.Join(videoPath, videoID+".nfo")
+			var itemGenres []string // 临时存放当前视频的标签
+			
 			if file, err := os.Open(nfoPath); err == nil {
 				decoder := xml.NewDecoder(file)
 				decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
@@ -240,29 +242,29 @@ func buildCache() error {
 				}
 				var nfo NfoFile
 				if err := decoder.Decode(&nfo); err == nil {
-					// 去重，防止同一个文件写了重复标签
 					seenGenres := make(map[string]bool)
-					
-					// 遍历所有解析到的 genre 标签
 					for i, g := range nfo.Genres {
 						g = strings.TrimSpace(g)
-						
-						// 修改点：如果是第一个标签 (i == 0)，并且内容与番号 (videoID) 相同（忽略大小写），则跳过
+						// 过滤第一个且与番号相同的标签
 						if i == 0 && strings.EqualFold(g, videoID) {
 							continue
 						}
-						
-						// 补充建议：如果 NFO 抓取工具可能把番号写在其他位置，
-						// 也可以直接把 `i == 0 &&` 删掉，忽略所有等于番号的标签：
-						// if strings.EqualFold(g, videoID) { continue }
-
 						if g != "" && !seenGenres[g] {
 							seenGenres[g] = true
-							newGenreVideoMap[g] = append(newGenreVideoMap[g], vItem)
+							itemGenres = append(itemGenres, g)
 						}
 					}
 				}
 				file.Close()
+			}
+			
+			// 将标签保存到当前视频项中
+			vItem.Genres = itemGenres
+			actressVideos = append(actressVideos, vItem)
+
+			// 将带着标签的完整 vItem 追加到全局标签分类缓存中
+			for _, g := range itemGenres {
+				newGenreVideoMap[g] = append(newGenreVideoMap[g], vItem)
 			}
 
 
